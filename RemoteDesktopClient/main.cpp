@@ -1,220 +1,231 @@
 #include <iostream>
 #include <queue>
+#include <memory>
 #include <thread>
 #include <mutex>
 
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+
+#include <Windows.h>
+#include <WIndowsx.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <stdlib.h>
-#include <stdio.h>
 
 #include "Message.hpp"
 
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
 
-float mapValue(float value, float in_min, float in_max, float out_min, float out_max) {
+float mapValue(float value, float in_min, float in_max, float out_min, float out_max)
+{
     return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-HBITMAP TakeCapture()
+void drawBitmap(const HBITMAP& hBitmap, HDC hDC)
 {
-    // Get the screen dimensions
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    // Create a compatible device context for the bitmap
+	HDC hBitmapDC = CreateCompatibleDC(hDC);
 
-    // Create a device context for the entire screen
-    HDC hScreenDC = GetDC(NULL);
+	// Select the bitmap into the memory DC
+	HGDIOBJ hOldBitmap = SelectObject(hBitmapDC, hBitmap);
 
-    // Create a compatible device context for the captured image
-    HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
+	// Get the dimensions of the bitmap
+	BITMAP bm;
+	GetObject(hBitmap, sizeof(BITMAP), &bm);
 
-    // Create a bitmap to hold the captured image
-    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, screenWidth, screenHeight);
+	// Draw the bitmap onto the window's HDC
+	BitBlt(hDC, 0, 0, bm.bmWidth, bm.bmHeight, hBitmapDC, 0, 0, SRCCOPY);
 
-    // Select the bitmap into the memory DC
-    SelectObject(hMemoryDC, hBitmap);
+	// Clean up
+	SelectObject(hBitmapDC, hOldBitmap);
+	DeleteDC(hBitmapDC);
+}
 
-    // Perform the screen capture
-    BitBlt(hMemoryDC, 0, 0, screenWidth, screenHeight, hScreenDC, 0, 0, SRCCOPY);
+HBITMAP g_hBitmap;
+std::mutex g_hBitmapMutex;
+std::queue<Message> g_messages;
+std::mutex g_messagesMutex;
 
-    DeleteDC(hMemoryDC);
-    ReleaseDC(NULL, hScreenDC);
+void QueueMessage(const Message& message)
+{
+    g_messagesMutex.lock();
+    g_messages.push(message);
+    g_messagesMutex.unlock();
+}
+
+void SendMessages(SOCKET socket)
+{
+    while (!g_messages.empty())
+    {
+        g_messagesMutex.lock();
+        Message message = g_messages.front();
+        g_messages.pop();
+        g_messagesMutex.unlock();
+
+		int iResult = send( socket, (char*)&message, sizeof(Message), 0);
+    }
+}
+
+void SendMessagesThread(SOCKET socket)
+{
+    while (true)
+    {
+        SendMessages(socket);
+    }
+}
+
+HBITMAP CreateHBitmapFromDIBBits(BYTE* dibBits, BITMAPINFO* bmi)
+{
+    HDC hdcScreen = GetDC(NULL);
+
+    // Create a compatible DC to work with
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    if (!hdcMem)
+    {
+        ReleaseDC(NULL, hdcScreen);
+        return NULL;
+    }
+
+    HBITMAP hBitmap = CreateDIBitmap(hdcScreen, &(bmi->bmiHeader), CBM_INIT, dibBits, bmi, DIB_RGB_COLORS);
+
+    // Clean up
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
 
     return hBitmap;
 }
 
-BYTE* CopyBitmapToCharArray(HBITMAP hBitmap, BITMAPINFO& bitmapInfo)
+void ReceiveCapture(SOCKET socket)
 {
-    HDC hdc = GetDC(NULL);
-    bitmapInfo.bmiHeader.biSize = sizeof(bitmapInfo.bmiHeader); 
+    BITMAPINFO bitmapInfo;
+    int bytesReceived = ReceiveAll(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO));
+    
+    BYTE* bitmapData = new BYTE[bitmapInfo.bmiHeader.biSizeImage];
+	bytesReceived = ReceiveAll(socket, (char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage);
 
-    // Get the BITMAPINFO structure from the bitmap
-    if(0 == GetDIBits(hdc, hBitmap, 0, 0, NULL, &bitmapInfo, DIB_RGB_COLORS)) {
-        std::cout << "error: GetDIBits\n";
-    }
+    HBITMAP hbmp;
+    hbmp = CreateHBitmapFromDIBBits(bitmapData, &bitmapInfo);
 
-    // create the bitmap buffer
-    BYTE* lpPixels = new BYTE[bitmapInfo.bmiHeader.biSizeImage];
-
-    // Better do this here - the original bitmap might have BI_BITFILEDS, which makes it
-    // necessary to read the color table - you might not want this.
-    bitmapInfo.bmiHeader.biCompression = BI_RGB;  
-
-    // get the actual bitmap buffer
-    if(0 == GetDIBits(hdc, hBitmap, 0, bitmapInfo.bmiHeader.biHeight, (LPVOID)lpPixels, &bitmapInfo, DIB_RGB_COLORS)) {
-        std::cout << "error: GetDIBits2\n";
-    }
-
-    ReleaseDC(NULL, hdc);
-
-    return lpPixels;
-}
-
-void SendCapture(SOCKET socket, HBITMAP hBitmap)
-{
-    int width, height;
-    BITMAPINFO bitmapInfo{0};
-    BYTE* bitmapData = CopyBitmapToCharArray(hBitmap, bitmapInfo);
-
-    send(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO), 0);
-    send(socket, (char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage, 0);
+    g_hBitmapMutex.lock();
+    g_hBitmap = hbmp;
+    g_hBitmapMutex.unlock();
 
     delete[] bitmapData;
 }
 
-void MouseMove(int x, int y)
+void ReceiveCaptureThread(SOCKET socket)
 {
-    INPUT input = { 0 };
-	input.type = INPUT_MOUSE;
-    input.mi.dx = x;
-    input.mi.dy = y;
-	input.mi.dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
-
-    SendInput(1, &input, sizeof(INPUT));
-}
-
-void MouseClickLeftDown()
-{
-    INPUT input = { 0 };
-
-	input.type = INPUT_MOUSE;
-	input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-
-	SendInput(1, &input, sizeof(INPUT));
-}
-
-void MouseClickLeftUp()
-{
-    INPUT input = { 0 };
-
-	input.type = INPUT_MOUSE;
-    input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-
-	SendInput(1, &input, sizeof(INPUT));
-   
-}
-
-void MouseScroll(int delta)
-{
-	INPUT input = { 0 };
-
-    input.type = INPUT_MOUSE;
-    input.mi.dwFlags = MOUSEEVENTF_WHEEL;
-    input.mi.mouseData = delta;
-
-    SendInput(1, &input, sizeof(INPUT));
-}
-
-void ProcessMessage(const Message& message)
-{
-    switch (message.event)
+    while (true)
     {
-        case EventMouseMove:
+        ReceiveCapture(socket);
+    }
+}
+
+// Function to handle messages sent to the window
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg)
+    {
+        case WM_CLOSE:
         {
-            int xPos = message.data1;
-            int yPos = message.data2;
-            MouseMove(xPos, yPos);
+            PostQuitMessage(0);
+            return 0;
+        }
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+
+            g_hBitmapMutex.lock();
+            HBITMAP hbmp = g_hBitmap;
+            g_hBitmapMutex.unlock();
+
+            drawBitmap(hbmp, hdc);
+            EndPaint(hwnd, &ps);
+
             break;
         }
-        case EventMouseLeftDown:
+        case WM_MOUSEMOVE:
         {
-            MouseClickLeftDown();
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            QueueMessage(Message{ EventMouseMove,
+                static_cast<int>(mapValue(xPos, 0, 1920, 0, 65535)), // should use window size of server
+                static_cast<int>(mapValue(yPos, 0, 1080, 0, 65535))
+                });
             break;
         }
-        case EventMouseLeftUp:
+        case WM_LBUTTONDOWN:
         {
-            MouseClickLeftUp();
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            QueueMessage(Message{ EventMouseLeftDown });
             break;
         }
-        case EventMouseScroll:
+        case WM_LBUTTONUP:
+        {
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            QueueMessage(Message{ EventMouseLeftUp });
+            break;
+        }
+        case WM_MOUSEWHEEL:
 		{
-            int delta = message.data1;
-            MouseScroll(delta);
+			int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            QueueMessage(Message{ EventMouseScroll, delta });
             break;
 		}
+       default:
+        {
+            InvalidateRect(hwnd, NULL, TRUE);
+            return DefWindowProc(hwnd, uMsg, wParam, lParam);
+        }
     }
 }
 
-void ProcessMessages(std::queue<Message>& messages, std::mutex* mutex)
-{
-	while (!messages.empty())
-	{
-        mutex->lock();
-        Message message = messages.front();
-		messages.pop();
-        mutex->unlock();
 
-		ProcessMessage(message);
-	}
-}
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Define the window class
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = WindowProc;  // Set the window procedure
+    wc.hInstance = hInstance;
+    wc.lpszClassName = L"MyWindowClass";
 
-Message ReceiveMessage(SOCKET socket)
-{
-	Message message;
-	int iResult = ReceiveAll(socket, (char*)&message, sizeof(Message));
-    if (iResult != 0 && iResult != sizeof(Message))
+    // Register the window class
+    RegisterClass(&wc);
+
+    // Create the window
+    HWND hwnd = CreateWindowEx(
+        0,                      // Extended window style
+        L"MyWindowClass",       // Class name
+        L"My Window",           // Window title
+        WS_OVERLAPPEDWINDOW,    // Window style
+        CW_USEDEFAULT,          // X position
+        CW_USEDEFAULT,          // Y position
+        CW_USEDEFAULT,          // Width
+        CW_USEDEFAULT,          // Height
+        NULL,                   // Parent window
+        NULL,                   // Menu
+        hInstance,              // Instance handle
+        NULL                    // Additional application data
+    );
+
+    if (hwnd == NULL)
     {
-        std::cerr << "error: received faulty message";
+        MessageBox(NULL, L"Window creation failed!", L"Error", MB_ICONERROR);
+        return 1;
     }
 
-    return message;
-}
+    // Show the window
+    ShowWindow(hwnd, nCmdShow);
 
-void SendCaptureThread(SOCKET socket)
-{
-    while (true)
-    {
-		HBITMAP hBitmap = TakeCapture();
-		SendCapture(socket, hBitmap);
-        DeleteObject(hBitmap);
-    }
-}
 
-void ReceiveCommandsThread(SOCKET socket, std::queue<Message>* messages, std::mutex* mutex)
-{
-    while (true)
-    {
-        Message message = ReceiveMessage(socket);
-        mutex->lock();
-        messages->push(message);
-        mutex->unlock();
-    }
-}
-
-int main()
-{
-    WSADATA wsaData;
+	WSADATA wsaData;
+    SOCKET ConnectSocket = INVALID_SOCKET;
+    struct addrinfo *result = NULL,
+                    *ptr = NULL,
+                    hints;
     int iResult;
 
-    SOCKET ListenSocket = INVALID_SOCKET;
-    SOCKET ClientSocket = INVALID_SOCKET;
-
-    struct addrinfo *result = NULL;
-    struct addrinfo hints;
-    
     // Initialize Winsock
     iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
     if (iResult != 0) {
@@ -222,82 +233,62 @@ int main()
         return 1;
     }
 
-    ZeroMemory(&hints, sizeof(hints));
-    hints.ai_family = AF_INET;
+    ZeroMemory( &hints, sizeof(hints) );
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
-    hints.ai_flags = AI_PASSIVE;
 
     // Resolve the server address and port
-    iResult = getaddrinfo(NULL, DEFAULT_PORT, &hints, &result);
+    static const char* serverAdress = "192.168.0.100";
+    iResult = getaddrinfo(serverAdress, DEFAULT_PORT, &hints, &result);
     if ( iResult != 0 ) {
         printf("getaddrinfo failed with error: %d\n", iResult);
         WSACleanup();
         return 1;
     }
 
-    // Create a SOCKET for the server to listen for client connections.
-    ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (ListenSocket == INVALID_SOCKET) {
-        printf("socket failed with error: %ld\n", WSAGetLastError());
-        freeaddrinfo(result);
-        WSACleanup();
-        return 1;
-    }
+    // Attempt to connect to an address until one succeeds
+    for(ptr=result; ptr != NULL ;ptr=ptr->ai_next) {
 
-    // Setup the TCP listening socket
-    iResult = bind( ListenSocket, result->ai_addr, (int)result->ai_addrlen);
-    if (iResult == SOCKET_ERROR) {
-        printf("bind failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(result);
-        closesocket(ListenSocket);
-        WSACleanup();
-        return 1;
+        // Create a SOCKET for connecting to server
+        ConnectSocket = socket(ptr->ai_family, ptr->ai_socktype, 
+            ptr->ai_protocol);
+        if (ConnectSocket == INVALID_SOCKET) {
+            printf("socket failed with error: %ld\n", WSAGetLastError());
+            WSACleanup();
+            return 1;
+        }
+
+        // Connect to server.
+        iResult = connect( ConnectSocket, ptr->ai_addr, (int)ptr->ai_addrlen);
+        if (iResult == SOCKET_ERROR) {
+            closesocket(ConnectSocket);
+            ConnectSocket = INVALID_SOCKET;
+            continue;
+        }
+        break;
     }
 
     freeaddrinfo(result);
 
-    iResult = listen(ListenSocket, SOMAXCONN);
-    if (iResult == SOCKET_ERROR) {
-        printf("listen failed with error: %d\n", WSAGetLastError());
-        closesocket(ListenSocket);
+    if (ConnectSocket == INVALID_SOCKET) {
+        printf("Unable to connect to server!\n");
         WSACleanup();
         return 1;
     }
 
-    // Accept a client socket
-    ClientSocket = accept(ListenSocket, NULL, NULL);
-    if (ClientSocket == INVALID_SOCKET) {
-        printf("accept failed with error: %d\n", WSAGetLastError());
-        closesocket(ListenSocket);
-        WSACleanup();
-        return 1;
-    }
+    std::thread sendMessagesThread{ SendMessagesThread, ConnectSocket };
+    std::thread receiveCaptureThread{ ReceiveCaptureThread, ConnectSocket };
 
-    // No longer need server socket
-    closesocket(ListenSocket);
-
-
-    std::queue<Message> messages;
-    std::mutex messagesMutex;
-	std::thread sendCaptureThread{ SendCaptureThread, ClientSocket };
-    std::thread receiveCommandsThread{ ReceiveCommandsThread, ClientSocket, &messages, &messagesMutex };
-    while (true)
+    MSG msg = {};
+    while (GetMessage(&msg, NULL, 0, 0))
     {
-        ProcessMessages(messages, &messagesMutex);
-    }
-
-    // shutdown the connection since we're done
-    iResult = shutdown(ClientSocket, SD_SEND);
-    if (iResult == SOCKET_ERROR) {
-        printf("shutdown failed with error: %d\n", WSAGetLastError());
-        closesocket(ClientSocket);
-        WSACleanup();
-        return 1;
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
     }
 
     // cleanup
-    closesocket(ClientSocket);
+    closesocket(ConnectSocket);
     WSACleanup();
 
     return 0;

@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.7.34024.191
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RemoteDesktopClient", "RemoteDesktop\RemoteDesktop.vcxproj", "{825453DD-7009-44F4-887E-A6F4B1335734}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RemoteDesktopClient", "RemoteDesktopClient\RemoteDesktopClient.vcxproj", "{825453DD-7009-44F4-887E-A6F4B1335734}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RemoteDesktopServer", "RemoteDesktopClient\RemoteDesktopClient.vcxproj", "{90259610-3FA1-4DD6-94A3-B2304E7BE9C6}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RemoteDesktopServer", "RemoteDesktopServer\RemoteDesktopServer.vcxproj", "{90259610-3FA1-4DD6-94A3-B2304E7BE9C6}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Common", "Common\Common.vcxproj", "{295B3104-787C-4B86-A358-3EFC3F23910B}"
 EndProject
