@@ -10,11 +10,43 @@
 #include <WIndowsx.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <wincodec.h>
+#include <zlib.h>
 
 #include "Message.hpp"
 
-#define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
+
+char* DecompressData(const char* compressedData, uLong compressedSize, uLong decompressedSize) {
+    z_stream stream;
+    stream.zalloc = Z_NULL;
+    stream.zfree = Z_NULL;
+    stream.opaque = Z_NULL;
+
+    int ret = inflateInit(&stream);
+    if (ret != Z_OK) {
+        std::cerr << "inflateInit failed with error code " << ret << std::endl;
+        return nullptr;
+    }
+
+    char* decompressedData = new char[decompressedSize];
+
+    stream.avail_in = compressedSize;
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(compressedData));
+    stream.avail_out = decompressedSize;
+    stream.next_out = reinterpret_cast<Bytef*>(decompressedData);
+
+    ret = inflate(&stream, Z_FINISH);
+    if (ret != Z_STREAM_END) {
+        std::cerr << "inflate failed with error code " << ret << std::endl;
+        delete[] decompressedData;
+        inflateEnd(&stream);
+        return nullptr;
+    }
+
+    inflateEnd(&stream);
+    return decompressedData;
+}
 
 float mapValue(float value, float in_min, float in_max, float out_min, float out_max)
 {
@@ -53,24 +85,27 @@ void QueueMessage(const Message& message)
     g_messagesMutex.unlock();
 }
 
-void SendMessages(SOCKET socket)
-{
-    while (!g_messages.empty())
-    {
-        g_messagesMutex.lock();
-        Message message = g_messages.front();
-        g_messages.pop();
-        g_messagesMutex.unlock();
-
-		SendAll( socket, (char*)&message, sizeof(Message));
-    }
-}
-
 void SendMessagesThread(SOCKET socket)
 {
+    Message message;
     while (true)
     {
-        SendMessages(socket);
+        bool send = false;
+
+        g_messagesMutex.lock();
+        if (!g_messages.empty())
+        {
+            message = g_messages.front();
+            send = true;
+            g_messages.pop();
+        }
+        g_messagesMutex.unlock();
+
+        if (send)
+        {
+			SendAll(socket, (char*)&message, sizeof(Message));
+            send = false;
+        }
     }
 }
 
@@ -99,9 +134,14 @@ void ReceiveCapture(SOCKET socket)
 {
     BITMAPINFO bitmapInfo;
     int bytesReceived = ReceiveAll(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO));
-    
-    BYTE* bitmapData = new BYTE[bitmapInfo.bmiHeader.biSizeImage];
-	bytesReceived = ReceiveAll(socket, (char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage);
+
+    uLong compressedSize;
+    bytesReceived = ReceiveAll(socket, (char*)&compressedSize, sizeof(uLong));
+
+    char* bitmapDataCompressed = new char[compressedSize];
+	bytesReceived = ReceiveAll(socket, bitmapDataCompressed, compressedSize);
+
+    BYTE* bitmapData = (BYTE*)DecompressData(bitmapDataCompressed, compressedSize, bitmapInfo.bmiHeader.biSizeImage);
 
     HBITMAP hbmp;
     hbmp = CreateHBitmapFromDIBBits(bitmapData, &bitmapInfo);
@@ -110,6 +150,7 @@ void ReceiveCapture(SOCKET socket)
     g_hBitmap = hbmp;
     g_hBitmapMutex.unlock();
 
+    delete[] bitmapDataCompressed;
     delete[] bitmapData;
 }
 

@@ -9,11 +9,46 @@
 #include <ws2tcpip.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <zlib.h>
 
 #include "Message.hpp"
 
-#define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
+#define COMPRESSION_RATE 9 
+
+char* CompressData(const char* inputData, uLong inputSize, uLong* compressedSize) {
+    z_stream stream;
+    stream.zalloc = Z_NULL;
+    stream.zfree = Z_NULL;
+    stream.opaque = Z_NULL;
+
+    int ret = deflateInit(&stream, COMPRESSION_RATE);
+    if (ret != Z_OK) {
+        std::cerr << "deflateInit failed with error code " << ret << std::endl;
+        return nullptr;
+    }
+
+    uLong bufferSize = compressBound(inputSize);
+    char* compressedData = new char[bufferSize];
+
+    stream.avail_in = inputSize;
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(inputData));
+    stream.avail_out = bufferSize;
+    stream.next_out = reinterpret_cast<Bytef*>(compressedData);
+
+    ret = deflate(&stream, Z_FINISH);
+    if (ret != Z_STREAM_END) {
+        std::cerr << "deflate failed with error code " << ret << std::endl;
+        delete[] compressedData;
+        deflateEnd(&stream);
+        return nullptr;
+    }
+
+    *compressedSize = stream.total_out;
+
+    deflateEnd(&stream);
+    return compressedData;
+}
 
 HBITMAP TakeCapture()
 {
@@ -74,11 +109,15 @@ void SendCapture(SOCKET socket, HBITMAP hBitmap)
     int width, height;
     BITMAPINFO bitmapInfo{0};
     BYTE* bitmapData = CopyBitmapToCharArray(hBitmap, bitmapInfo);
+    uLong compressedSize;
+    char* compressedBitmapData = CompressData((char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage, &compressedSize);
 
     SendAll(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO));
-    SendAll(socket, (char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage);
+    SendAll(socket, (char*)&compressedSize, sizeof(uLong));
+    SendAll(socket, (char*)compressedBitmapData, compressedSize);
 
     delete[] bitmapData;
+    delete[] compressedBitmapData;
 }
 
 void MouseMove(int x, int y)
@@ -185,7 +224,6 @@ void SendCaptureThread(SOCKET socket)
     {
 		HBITMAP hBitmap = TakeCapture();
 		SendCapture(socket, hBitmap);
-        DeleteObject(hBitmap);
     }
 }
 
