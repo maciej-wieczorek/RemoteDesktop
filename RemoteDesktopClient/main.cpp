@@ -62,7 +62,7 @@ void SendMessages(SOCKET socket)
         g_messages.pop();
         g_messagesMutex.unlock();
 
-		int iResult = send( socket, (char*)&message, sizeof(Message), 0);
+		SendAll( socket, (char*)&message, sizeof(Message));
     }
 }
 

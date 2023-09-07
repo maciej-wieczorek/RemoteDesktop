@@ -34,3 +34,20 @@ int ReceiveAll(SOCKET socket, char* buffer, int totalBytes)
 
     return bytesReceived;
 }
+
+int SendAll(SOCKET socket, const char* buffer, int totalBytes) {
+    int totalSent = 0;
+
+    while (totalSent < totalBytes)
+    {
+        int sent = send(socket, buffer + totalSent, totalBytes - totalSent, 0);
+
+        if (sent == SOCKET_ERROR) {
+            exit(0);
+        }
+
+        totalSent += sent;
+    }
+
+    return totalSent;
+}

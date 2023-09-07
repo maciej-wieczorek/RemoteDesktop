@@ -75,8 +75,8 @@ void SendCapture(SOCKET socket, HBITMAP hBitmap)
     BITMAPINFO bitmapInfo{0};
     BYTE* bitmapData = CopyBitmapToCharArray(hBitmap, bitmapInfo);
 
-    send(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO), 0);
-    send(socket, (char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage, 0);
+    SendAll(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO));
+    SendAll(socket, (char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage);
 
     delete[] bitmapData;
 }
