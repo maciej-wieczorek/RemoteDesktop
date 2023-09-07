@@ -14,7 +14,7 @@
 #include "Message.hpp"
 
 #define DEFAULT_PORT "27015"
-#define COMPRESSION_RATE 9 
+#define COMPRESSION_RATE 3
 
 char* CompressData(const char* inputData, uLong inputSize, uLong* compressedSize) {
     z_stream stream;
@@ -92,7 +92,7 @@ BYTE* CopyBitmapToCharArray(HBITMAP hBitmap, BITMAPINFO& bitmapInfo)
 
     // Better do this here - the original bitmap might have BI_BITFILEDS, which makes it
     // necessary to read the color table - you might not want this.
-    bitmapInfo.bmiHeader.biCompression = BI_RGB;  
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
 
     // get the actual bitmap buffer
     if(0 == GetDIBits(hdc, hBitmap, 0, bitmapInfo.bmiHeader.biHeight, (LPVOID)lpPixels, &bitmapInfo, DIB_RGB_COLORS)) {
@@ -111,6 +111,8 @@ void SendCapture(SOCKET socket, HBITMAP hBitmap)
     BYTE* bitmapData = CopyBitmapToCharArray(hBitmap, bitmapInfo);
     uLong compressedSize;
     char* compressedBitmapData = CompressData((char*)bitmapData, bitmapInfo.bmiHeader.biSizeImage, &compressedSize);
+
+    std::cout << "compression rate: " << compressedSize / (double)bitmapInfo.bmiHeader.biSizeImage  << "     " << '\r';
 
     SendAll(socket, (char*)&bitmapInfo, sizeof(BITMAPINFO));
     SendAll(socket, (char*)&compressedSize, sizeof(uLong));
@@ -224,6 +226,7 @@ void SendCaptureThread(SOCKET socket)
     {
 		HBITMAP hBitmap = TakeCapture();
 		SendCapture(socket, hBitmap);
+        DeleteObject(hBitmap);
     }
 }
 

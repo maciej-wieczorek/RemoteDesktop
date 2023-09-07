@@ -3,6 +3,7 @@
 #include <memory>
 #include <thread>
 #include <mutex>
+#include <stack>
 
 #define WIN32_LEAN_AND_MEAN
 
@@ -16,6 +17,11 @@
 #include "Message.hpp"
 
 #define DEFAULT_PORT "27015"
+
+std::mutex g_hBitmapMutex;
+std::stack<HBITMAP> g_hBitmaps;
+std::queue<Message> g_messages;
+std::mutex g_messagesMutex;
 
 char* DecompressData(const char* compressedData, uLong compressedSize, uLong decompressedSize) {
     z_stream stream;
@@ -72,11 +78,6 @@ void drawBitmap(const HBITMAP& hBitmap, HDC hDC)
 	SelectObject(hBitmapDC, hOldBitmap);
 	DeleteDC(hBitmapDC);
 }
-
-HBITMAP g_hBitmap;
-std::mutex g_hBitmapMutex;
-std::queue<Message> g_messages;
-std::mutex g_messagesMutex;
 
 void QueueMessage(const Message& message)
 {
@@ -146,12 +147,13 @@ void ReceiveCapture(SOCKET socket)
     HBITMAP hbmp;
     hbmp = CreateHBitmapFromDIBBits(bitmapData, &bitmapInfo);
 
-    g_hBitmapMutex.lock();
-    g_hBitmap = hbmp;
-    g_hBitmapMutex.unlock();
-
     delete[] bitmapDataCompressed;
     delete[] bitmapData;
+
+    g_hBitmapMutex.lock();
+    g_hBitmaps.push(hbmp);
+    g_hBitmapMutex.unlock();
+
 }
 
 void ReceiveCaptureThread(SOCKET socket)
@@ -159,6 +161,15 @@ void ReceiveCaptureThread(SOCKET socket)
     while (true)
     {
         ReceiveCapture(socket);
+    }
+}
+
+void DestroyBitmaps()
+{
+    while (!g_hBitmaps.empty())
+    {
+        DeleteObject(g_hBitmaps.top());
+        g_hBitmaps.pop();
     }
 }
 
@@ -173,15 +184,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
         case WM_PAINT:
         {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
+            if (!g_hBitmaps.empty())
+            {
 
-            g_hBitmapMutex.lock();
-            HBITMAP hbmp = g_hBitmap;
-            g_hBitmapMutex.unlock();
+                g_hBitmapMutex.lock();
+                HBITMAP hbmp = g_hBitmaps.top();
+                g_hBitmaps.pop();
+                DestroyBitmaps();
+                g_hBitmapMutex.unlock();
 
-            drawBitmap(hbmp, hdc);
-            EndPaint(hwnd, &ps);
+				PAINTSTRUCT ps;
+				HDC hdc = BeginPaint(hwnd, &ps);
+                drawBitmap(hbmp, hdc);
+                EndPaint(hwnd, &ps);
+                DeleteObject(hbmp);
+            }
 
             break;
         }
